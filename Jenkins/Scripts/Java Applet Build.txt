@@ -1,0 +1,122 @@
+#!groovy
+ 
+def server = Artifactory.newServer url: "https://artifactory.fis.dev/artifactory/ph3middleware-generic-release-local/", credentialsId: 'Phase3-Middleware'
+def MANIFEST = "F:\\phase3UI\\UI\\trunk\\Screens\\myManifest.txt"
+def P3UICERT = "F:\\phase3UI\\UI\\trunk\\Screens\\P3UICert.p12"
+def ZIPTOOL = "C:\\Program Files\\7-Zip\\7z.exe"
+ 
+pipeline {
+    agent {label 'ph3_middleware'}
+   stages {
+       stage('write input into file') {
+           steps {
+				script {
+					String str = params.screenslist;
+					writeFile(file: 'F:\\Jenkins_workspace\\workspace\\PHASE3\\Applets\\myziplist.txt', text: str)
+					bat "copy F:\\Jenkins_workspace\\workspace\\PHASE3\\Applets\\myziplist.txt F:\\Stage\\UIBUILD\\vRelease\\myziplist.txt"
+					bat """ "${ZIPTOOL}" a "${env.WORKSPACE}\\${CMticket}.zip" F:\\Stage\\UIBUILD\\vRelease\\myziplist.txt"""
+               }
+           }
+       }
+       stage('Extract from SVN and Build') {
+           steps {
+				script {
+					def file = readFile "F:\\Jenkins_workspace\\workspace\\PHASE3\\Applets\\myziplist.txt"
+                    def lines = file.readLines()
+                    lines.each { String line ->
+                        def screen_name = line.split(":")[0]
+                        def svn_version = line.split(":")[1]
+                        echo "screen_name : ${screen_name}"
+                        echo "revision : ${svn_version}"
+                        def SVN_REPO = "https://svn.fis.dev/SDT/phase3UI/UI/trunk/Screens/${screen_name}@${svn_version}"
+ 
+						def scmVars = checkout([$class: 'SubversionSCM', additionalCredentials: [], excludedCommitMessages: '', excludedRegions: '', excludedRevprop: '', excludedUsers: '', filterChangelog: false, ignoreDirPropChanges: false, includedRegions: '', locations: [[cancelProcessOnExternalsFail: true, credentialsId: 'Phase3-Middleware', depthOption: 'infinity', ignoreExternalsOption: true, local: """${screen_name}""", remote: """${SVN_REPO}"""]], quietOperation: false, workspaceUpdater: [$class: 'CheckoutUpdater']])
+						env.svnversionnumber = scmVars.SVN_REVISION
+						def svndata = "${env.svnversionnumber}"
+						writeFile(file: "${screen_name}\\svn_version.txt", text: svndata)
+						bat "del ${screen_name}\\*.class"
+						bat "del ${screen_name}\\*.jar"
+						bat "javac -classpath F:\\Jenkins_workspace\\workspace\\PHASE3\\Applets\\itsjlib\\classes\\itsjlib.jar;C:\\Java\\jre1.8.0\\lib\\plugin.jar ${env.WORKSPACE}\\${screen_name}\\${screen_name}.java ${env.WORKSPACE}\\${screen_name}\\${screen_name}_MAINAPP.java ${env.WORKSPACE}\\${screen_name}\\${screen_name}_Applet.java"
+						bat "cd ${screen_name} && jar cfm ${screen_name}.jar ${MANIFEST} *.class"
+						bat """jarsigner -tsa http://timestamp.digicert.com -verbose -storetype pkcs12 -keystore ${P3UICERT} -storepass FISCertificate1 ${screen_name}\\${screen_name}.jar "fidelity national information services" """
+ 
+						bat "xcopy ${env.WORKSPACE}\\${screen_name}\\${screen_name}.jar F:\\Stage\\UIBUILD\\vRelease\\${screen_name}\\ /E /F /Y"
+						bat "copy ${env.WORKSPACE}\\${screen_name}\\*.html F:\\Stage\\UIBUILD\\vRelease\\${screen_name}\\"
+						bat "copy ${env.WORKSPACE}\\${screen_name}\\svn_version.txt F:\\Stage\\UIBUILD\\vRelease\\${screen_name}\\"
+ 
+						bat """ "${ZIPTOOL}" a "${env.WORKSPACE}\\${CMticket}.zip" F:\\Stage\\UIBUILD\\vRelease\\${screen_name}"""						
+                    }
+                }
+           }
+       }
+		stage ('Upload To artifactory') {   
+		steps {
+			script {
+				echo "${env.WORKSPACE}\\${CMticket}.zip"
+				def uploadSpec = """{
+					"files": [
+						{
+							"pattern": "${env.WORKSPACE}\\${CMticket}.zip",
+							"target": "Applets/UIBuild/"
+					 }
+				 ]
+				}"""
+				server.upload spec: uploadSpec, failNoOp: true
+				}
+			}
+		}
+   }
+	post {
+        success {
+            script {
+                emailext (
+                    to: 'mark.williams2@fisglobal.com; Pallavi.Mengade@FISGlobal.com; GSC.PRO.P3.MiddleWare@fisglobal.com',
+                    from: 'Phase3.Release.Team@FISGlobal.com',
+                    subject: "SUCCESSFUL: JENKINS JOB: ${env.JOB_NAME} - Jira Ticket: ${CMticket}",
+                    body: """<p>SUCCESSFUL: Job ${env.JOB_NAME} Build ${env.BUILD_NUMBER} - Jira Ticket: ${CMticket}:</p>
+<p>Jenkins JOB: &QUOT;<a href='${env.BUILD_URL}'>${env.JOB_NAME} Build ${env.BUILD_NUMBER}</a>&QUOT;</p>
+<p>Build Changes: &QUOT;<a href='${env.BUILD_URL}changes'>${env.JOB_NAME} Build ${env.BUILD_NUMBER} changes</a>&QUOT;</p>
+<p>Build output at &QUOT;<a href="${env.BUILD_URL}console">${env.JOB_NAME} Build ${env.BUILD_NUMBER} console</a>&QUOT;</p>"""
+                )
+            }
+        }
+        failure {
+            script {
+                emailext (
+                    to: 'mark.williams2@fisglobal.com; Pallavi.Mengade@FISGlobal.com; GSC.PRO.P3.MiddleWare@fisglobal.com',
+                    from: 'Phase3.Release.Team@FISGlobal.com',
+                    subject: "FAILED: JENKINS JOB: ${env.JOB_NAME} - Jira Ticket: ${CMticket}",
+                    body: """<p>FAILED: Job ${env.JOB_NAME} Build ${env.BUILD_NUMBER} - Jira Ticket: ${CMticket}:</p>
+<p>Jenkins JOB: &QUOT;<a href='${env.BUILD_URL}'>${env.JOB_NAME} Build ${env.BUILD_NUMBER}</a>&QUOT;</p>
+<p>Build Changes: &QUOT;<a href='${env.BUILD_URL}changes'>${env.JOB_NAME} Build ${env.BUILD_NUMBER} changes</a>&QUOT;</p>
+<p>Build output at &QUOT;<a href="${env.BUILD_URL}console">${env.JOB_NAME} Build ${env.BUILD_NUMBER} console</a>&QUOT;</p>"""
+                )
+            }    
+        }
+    }   
+}
+
+
+
+
+
+
+#!groovy
+ 
+def server = Artifactory.newServer url: "https://artifactory.fis.dev/artifactory/ph3middleware-generic-release-local/", credentialsId: 'Phase3-Middleware'
+def SVN_REPO = "https://svn.fis.dev/SDT/phase3UI/UI/trunk/itsjlib"
+ 
+pipeline {
+    agent {label 'ph3_middleware'}
+
+    stages {
+        stage('Extract from SVN') {
+            steps {
+                cleanWs()
+                script {
+                    def scmVars = checkout([$class: 'SubversionSCM', additionalCredentials: [], excludedCommitMessages: '', excludedRegions: '', excludedRevprop: '', excludedUsers: '', filterChangelog: false, ignoreDirPropChanges: false, includedRegions: '', locations: [[cancelProcessOnExternalsFail: true, credentialsId: 'Phase3-Middleware', depthOption: 'infinity', ignoreExternalsOption: true, local: "classes", remote: """${SVN_REPO}//classes"""]], quietOperation: false, workspaceUpdater: [$class: 'UpdateUpdater']])
+                }
+            }
+        }
+    }
+}

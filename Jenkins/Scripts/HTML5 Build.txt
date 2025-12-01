@@ -1,0 +1,97 @@
+#!groovy
+ 
+def server = Artifactory.newServer url: "https://artifactory.fis.dev/artifactory/ph3middleware-generic-release-local/", credentialsId: 'Phase3-Middleware'
+def SVN_REPO = "https://svn.fis.dev/SDT/phase3UI/HTML5_Phase3/branch/RUF/UAT/phase3ui"
+def ZIPTOOL = "C:\\Program Files\\7-Zip\\7z.exe"
+ 
+pipeline {
+    agent {label 'ph3_middleware'}
+
+    stages {
+        stage('Extract from SVN') {
+            steps {
+                cleanWs()
+                script {
+                    def scmVars = checkout([$class: 'SubversionSCM', additionalCredentials: [], excludedCommitMessages: '', excludedRegions: '', excludedRevprop: '', excludedUsers: '', filterChangelog: false, ignoreDirPropChanges: false, includedRegions: '', locations: [[cancelProcessOnExternalsFail: true, credentialsId: 'Phase3-Middleware', depthOption: 'infinity', ignoreExternalsOption: true, local: '.', remote: """${SVN_REPO}"""]], quietOperation: false, workspaceUpdater: [$class: 'UpdateUpdater']])
+                    env.svnversionnumber = scmVars.SVN_REVISION
+                    def svndata = "${env.svnversionnumber}"
+                    writeFile(file: "svn_version.txt", text: svndata)
+                }
+            }
+        }
+        stage ('Get node modules') {
+            environment {
+                    TO_NODE = "${env.WORKSPACE}\\node_modules"
+                    FROM_NODE="F:\\Jenkins_workspace\\workspace\\PHASE3\\HTML5\\node_modules"
+            }
+            steps {
+			    script {
+			        bat "if exist ${env.TO_NODE} rd /s /q ${env.TO_NODE}"
+                    bat "mkdir ${env.TO_NODE}"
+				    bat "xcopy ${env.FROM_NODE}\\* ${env.TO_NODE} /s  /e  /f"
+                }
+            }
+        }
+        stage ('Build') {
+            steps {
+                script {
+                    bat "npm run build:prod"
+                    bat "copy ${env.WORKSPACE}\\svn_version.txt ${env.WORKSPACE}\\dist"
+                }    
+            }
+        }
+        stage ('Zip Artifacts') {
+            steps {
+                script {
+                    bat """ "${ZIPTOOL}" a "${env.WORKSPACE}\\${env.svnversionnumber}.zip" "${env.WORKSPACE}\\dist\\*" """
+                }
+            }
+		}
+		stage ('Upload To artifactory') {   
+            steps {
+                script {
+                    echo "${env.TO_THE_DIR}/${env.svnversionnumber}.zip"
+                    def uploadSpec = """{
+                        "files": [
+                            {
+                                "pattern": "${env.WORKSPACE}\\${env.svnversionnumber}.zip",
+                                "target": "HTML5/RUF_UAT/"
+                         }
+                     ]
+                    }"""
+                    server.upload spec: uploadSpec, failNoOp: true
+                }
+            }
+        }
+    }
+	post {
+        success {
+            script {
+				def svndatafile = readFile(file: "svn_version.txt")
+                emailext (
+                    to: 'mark.williams2@fisglobal.com; Pallavi.Mengade@FISGlobal.com; GSC.PRO.P3.MiddleWare@fisglobal.com',
+                    from: 'Phase3.Release.Team@FISGlobal.com',
+                    subject: "SUCCESSFUL: JENKINS JOB: ${env.JOB_NAME} - SVN Number: ${svndatafile}",
+                    body: """<p>SUCCESSFUL: Job ${env.JOB_NAME} Build ${env.BUILD_NUMBER} - SVN Number: ${svndatafile}:</p>
+<p>Jenkins JOB: &QUOT;<a href='${env.BUILD_URL}'>${env.JOB_NAME} Build ${env.BUILD_NUMBER}</a>&QUOT;</p>
+<p>Build Changes: &QUOT;<a href='${env.BUILD_URL}changes'>${env.JOB_NAME} Build ${env.BUILD_NUMBER} changes</a>&QUOT;</p>
+<p>Build output at &QUOT;<a href="${env.BUILD_URL}console">${env.JOB_NAME} Build ${env.BUILD_NUMBER} console</a>&QUOT;</p>"""
+                )
+            }
+        }
+        failure {
+            script {
+                def svndatafile = readFile(file: "svn_version.txt")
+                emailext (
+                    to: 'mark.williams2@fisglobal.com; Pallavi.Mengade@FISGlobal.com; GSC.PRO.P3.MiddleWare@fisglobal.com',
+                    from: 'Phase3.Release.Team@FISGlobal.com',
+                    subject: "FAILED: JENKINS JOB: ${env.JOB_NAME} - SVN Number: ${svndatafile}",
+                    body: """<p>FAILED: Job ${env.JOB_NAME} Build ${env.BUILD_NUMBER} - SVN Number: ${svndatafile}:</p>
+<p>Jenkins JOB: &QUOT;<a href='${env.BUILD_URL}'>${env.JOB_NAME} Build ${env.BUILD_NUMBER}</a>&QUOT;</p>
+<p>Build Changes: &QUOT;<a href='${env.BUILD_URL}changes'>${env.JOB_NAME} Build ${env.BUILD_NUMBER} changes</a>&QUOT;</p>
+<p>Build output at &QUOT;<a href="${env.BUILD_URL}console">${env.JOB_NAME} Build ${env.BUILD_NUMBER} console</a>&QUOT;</p>"""
+                )
+            }    
+        }
+    }
+}

@@ -1,0 +1,150 @@
+#!groovy
+ 
+def server = Artifactory.newServer url: "https://artifactory.fis.dev/artifactory/ph3middleware-generic-release-local/", credentialsId: 'Phase3-Middleware'
+def (JDIR, BUILDENV, THEJOB) = env.JOB_NAME.split("/")
+def SVN_REPO = "https://svn.fis.dev/SDT/P3MW/REST/trunk/${BUILDENV}/${THEJOB}"
+def MSPATH = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\BuildTools\\MSBuild\\Current\\Bin\\msbuild"
+def SIGNPATH = "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\"
+def ASSEMBLY_FILE = "properties\\AssemblyInfo.cs"
+ 
+pipeline {
+    agent {label 'ph3_middleware'}
+    stages {
+        stage('Extract from SVN') {
+            steps {
+                cleanWs()
+                script {
+                    def scmVars = checkout([$class: 'SubversionSCM', additionalCredentials: [], excludedCommitMessages: '', excludedRegions: '', excludedRevprop: '', excludedUsers: '', filterChangelog: false, ignoreDirPropChanges: false, includedRegions: '', locations: [[cancelProcessOnExternalsFail: true, credentialsId: 'Phase3-Middleware', depthOption: 'infinity', ignoreExternalsOption: true, local: '.', remote: """${SVN_REPO}"""]], quietOperation: false, workspaceUpdater: [$class: 'UpdateUpdater']])
+                    env.svnversionnumber = scmVars.SVN_REVISION
+                    def svndata = "${env.svnversionnumber}"
+                    writeFile(file: "svn_version.txt", text: svndata)
+                }
+            }
+        }
+        stage ('nuget') {
+            when { expression { return fileExists (".nuget\\nuget.exe") } }
+            steps {
+                bat ".nuget\\nuget.exe restore"
+            }
+        }
+        stage ('Update AssemblyInfo.cs File') {
+            steps {
+                script {
+                    if ( "${THEJOB}" == "Phase3APICore") {
+                        def bfile = readFile file: "FIS.Phase3.BusinessBase\\${ASSEMBLY_FILE}", encoding: "UTF-8"
+                        bfile = bfile.replaceAll("1.0.0.0", "1.0.${env.svnversionnumber}.${env.BUILD_NUMBER}")
+                        writeFile file: "FIS.Phase3.BusinessBase\\${ASSEMBLY_FILE}", text: bfile, encoding: "UTF-8"
+                        def cfile = readFile file: "FIS.Phase3.Contracts\\${ASSEMBLY_FILE}", encoding: "UTF-8"
+                        cfile = cfile.replaceAll("1.0.0.0", "1.0.${env.svnversionnumber}.${env.BUILD_NUMBER}")
+                        writeFile file: "FIS.Phase3.Contracts\\${ASSEMBLY_FILE}", text: cfile, encoding: "UTF-8"
+                        def ifile = readFile file: "FIS.Phase3.IPCMapper\\${ASSEMBLY_FILE}", encoding: "UTF-8"
+                        ifile = ifile.replaceAll("1.0.0.0", "1.0.${env.svnversionnumber}.${env.BUILD_NUMBER}")
+                        writeFile file: "FIS.Phase3.IPCMapper\\${ASSEMBLY_FILE}", text: ifile, encoding: "UTF-8"
+                    }
+                    else {
+                        def afile = readFile file: "${THEJOB}\\${ASSEMBLY_FILE}", encoding: "UTF-8"
+                        afile = afile.replaceAll("1.0.0.0", "1.0.${env.svnversionnumber}.${env.BUILD_NUMBER}")
+                        writeFile file: "${THEJOB}\\${ASSEMBLY_FILE}", text: afile, encoding: "UTF-8"   
+                    }
+                }
+            }
+        }
+        stage ('Build') {
+            steps {
+                bat  """ "${MSPATH}" "${THEJOB}.sln" /p:Configuration=Release /p:Platform="Any CPU" """
+            }
+        }
+		stage ('Sign and Timestamp and Stage Artifacts') {
+            environment {
+                    TO_DIR = "${env.WORKSPACE}\\Stage\\${BUILDENV}\\${THEJOB}\\${env.svnversionnumber}"
+            }
+            steps {
+                script {
+                    if ( "${THEJOB}" == "Phase3APICore") {
+                        FROM_DIR = "FIS.Phase3.BusinessBase\\bin\\Release"
+                    }
+					else if ( "${THEJOB}" == "Phase3APIService") {
+                        FROM_DIR = "${THEJOB}\\bin"
+                    }
+					else {
+                        FROM_DIR = "${THEJOB}\\bin\\Release"
+					}
+				bat "if exist ${env.TO_DIR} rd /s /q ${env.TO_DIR}"
+                bat "mkdir ${env.TO_DIR}"
+				echo "${FROM_DIR}"
+                }
+				script {
+					if ( "${THEJOB}" == "Phase3APICore") {
+						bat "xcopy ${FROM_DIR}\\FIS.Phase3.BusinessBase.dll ${env.TO_DIR} /s  /e  /f"
+						bat  """ "${SIGNPATH}\\signtool.exe" sign /f "${SIGNPATH}\\P3UICert.p12" /p FISCertificate1  "${env.TO_DIR}\\FIS.Phase3.BusinessBase.dll" """
+						bat  """ "${SIGNPATH}\\signtool.exe" timestamp /t http://timestamp.digicert.com "${env.TO_DIR}\\FIS.Phase3.BusinessBase.dll" """  
+						bat "xcopy ${FROM_DIR}\\FIS.Phase3.Contracts.dll ${env.TO_DIR} /s  /e  /f"
+						bat  """ "${SIGNPATH}\\signtool.exe" sign /f "${SIGNPATH}\\P3UICert.p12" /p FISCertificate1 "${env.TO_DIR}\\FIS.Phase3.Contracts.dll" """
+						bat  """ "${SIGNPATH}\\signtool.exe" timestamp /t http://timestamp.digicert.com "${env.TO_DIR}\\FIS.Phase3.Contracts.dll" """  
+						bat "xcopy ${FROM_DIR}\\FIS.Phase3.IPCMapper.dll ${env.TO_DIR} /s  /e  /f"
+						bat  """ "${SIGNPATH}\\signtool.exe" sign /f "${SIGNPATH}\\P3UICert.p12" /p FISCertificate1 "${env.TO_DIR}\\FIS.Phase3.IPCMapper.dll" """
+						bat  """ "${SIGNPATH}\\signtool.exe" timestamp /t http://timestamp.digicert.com "${env.TO_DIR}\\FIS.Phase3.IPCMapper.dll" """  
+					}
+					else if ( "${THEJOB}" == "Phase3APIService") {
+                        bat "xcopy ${FROM_DIR}\\Phase3Service.dll ${env.TO_DIR} /s  /e  /f"
+						bat  """ "${SIGNPATH}\\signtool.exe" sign /f "${SIGNPATH}\\P3UICert.p12" /p FISCertificate1 "${env.TO_DIR}\\Phase3Service.dll" """
+						bat  """ "${SIGNPATH}\\signtool.exe" timestamp /t http://timestamp.digicert.com "${env.TO_DIR}\\Phase3Service.dll" """
+					}
+					else {
+						bat "xcopy ${FROM_DIR}\\${THEJOB}.dll ${env.TO_DIR} /s  /e  /f"
+						bat  """ "${SIGNPATH}\\signtool.exe" sign /f "${SIGNPATH}\\P3UICert.p12" /p FISCertificate1 "${env.TO_DIR}\\${THEJOB}.dll" """
+						bat  """ "${SIGNPATH}\\signtool.exe" timestamp /t http://timestamp.digicert.com "${env.TO_DIR}\\${THEJOB}.dll" """
+					}
+				}
+            }
+        }
+        stage ('Upload To artifactory') {
+            environment {
+                TO_THE_DIR = "${env.WORKSPACE}/Stage/${BUILDENV}/${THEJOB}/${env.svnversionnumber}"
+            }
+            steps {
+                script {
+                    def uploadSpec = """{
+                        "files": [
+                            {
+                                "pattern": "${env.TO_THE_DIR}/*.dll",
+                                "target": "${BUILDENV}/${THEJOB}/${env.svnversionnumber}/"
+                         }
+                     ]
+                    }"""
+                    server.upload spec: uploadSpec, failNoOp: true
+                }
+            }
+        }
+    }
+	post {
+        success {
+            script {
+				def svndatafile = readFile(file: "svn_version.txt")
+                emailext (
+                    to: 'mark.williams2@FISGlobal.com; Pallavi.Mengade@FISGlobal.com',
+                    from: 'Phase3.Release.Team@FISGlobal.com',
+                    subject: "SUCCESSFUL: JENKINS JOB: ${env.JOB_NAME} - SVN Number: ${svndatafile}",
+                    body: """<p>SUCCESSFUL: Job ${env.JOB_NAME} Build ${env.BUILD_NUMBER} - SVN Number: ${svndatafile}:</p>
+<p>Jenkins JOB: &QUOT;<a href='${env.BUILD_URL}'>${env.JOB_NAME} Build ${env.BUILD_NUMBER}</a>&QUOT;</p>
+<p>Build Changes: &QUOT;<a href='${env.BUILD_URL}changes'>${env.JOB_NAME} Build ${env.BUILD_NUMBER} changes</a>&QUOT;</p>
+<p>Build output at &QUOT;<a href="${env.BUILD_URL}console">${env.JOB_NAME} Build ${env.BUILD_NUMBER} console</a>&QUOT;</p>"""
+                )
+            }
+        }
+        failure {
+            script {
+                def svndatafile = readFile(file: "svn_version.txt")
+                emailext (
+                    to: 'mark.williams2@FISGlobal.com; Pallavi.Mengade@FISGlobal.com',
+                    from: 'Phase3.Release.Team@FISGlobal.com',
+                    subject: "FAILED: JENKINS JOB: ${env.JOB_NAME} - SVN Number: ${svndatafile}",
+                    body: """<p>FAILED: Job ${env.JOB_NAME} Build ${env.BUILD_NUMBER} - SVN Number: ${svndatafile}:</p>
+<p>Jenkins JOB: &QUOT;<a href='${env.BUILD_URL}'>${env.JOB_NAME} Build ${env.BUILD_NUMBER}</a>&QUOT;</p>
+<p>Build Changes: &QUOT;<a href='${env.BUILD_URL}changes'>${env.JOB_NAME} Build ${env.BUILD_NUMBER} changes</a>&QUOT;</p>
+<p>Build output at &QUOT;<a href="${env.BUILD_URL}console">${env.JOB_NAME} Build ${env.BUILD_NUMBER} console</a>&QUOT;</p>"""
+                )
+            }    
+        }
+    }
+}
