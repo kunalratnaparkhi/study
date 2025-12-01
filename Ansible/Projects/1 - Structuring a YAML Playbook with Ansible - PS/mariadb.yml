@@ -1,0 +1,23 @@
+---
+- name: Install Maria DB
+  hosts: localhost
+  become: yes
+  become_method: sudo
+  connection: ssh
+  gather_facts: yes
+  
+  tasks:
+    - name: Installation
+      dnf:
+        name: mariadb-server
+        state: latest
+      notify: 
+        - startservice
+   
+   handlers: 
+    - name: startservice
+      service: 
+        name: mariadb
+        state: restarted
+      
+      
